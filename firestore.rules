@@ -1,0 +1,138 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reglas de aislamiento multi-tenant.
+//
+// Dos ideas sostienen todo el archivo:
+//
+// 1. Firestore NO tiene seguridad a nivel de campo. Las reglas son
+//    todo-o-nada por documento. Si un documento es de lectura pública,
+//    TODOS sus campos son públicos. Por eso lo público y lo secreto se
+//    separan estructuralmente (documento raíz vs subcolección privada),
+//    no con condiciones sobre campos.
+//
+// 2. La pertenencia a un tenant se lee de un custom claim del token, no de
+//    un documento de Firestore. Un claim lo firma el backend y el cliente no
+//    puede alterarlo; un documento /users/{uid} que el propio usuario puede
+//    escribir no sirve como base de autorización.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Identidad ────────────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isMemberOf(tenantId) {
+      return isSignedIn() && request.auth.token.tenantId == tenantId;
+    }
+
+    function isAdminOf(tenantId) {
+      return isMemberOf(tenantId) && request.auth.token.role == 'admin';
+    }
+
+    // ── tenants ──────────────────────────────────────────────────────────────
+    //
+    // El documento raíz es de lectura pública: la tienda necesita nombre,
+    // logo y horarios sin que el visitante esté logueado.
+    //
+    // La allowlist de escritura es lo que hace que esa decisión sea segura.
+    // Sin ella el esquema es seguro "por omisión": alcanza con que alguien
+    // agregue un campo sensible para que quede público al instante. Con ella,
+    // escribir un accessToken en este documento es rechazado por las reglas.
+    //
+    // OJO: request.resource.data son las claves del documento RESULTANTE, no
+    // las modificadas. Cada campo público nuevo hay que sumarlo acá.
+
+    match /tenants/{tenantId} {
+      function soloCamposPublicos() {
+        return request.resource.data.keys().hasOnly([
+          'subdomain',
+          'displayName',
+          'logoUrl',
+          'about',
+          'address',
+          'openingHours',
+          'phone',
+          'currency',
+          'paymentPublicKey',
+          'bankName',
+          'bankAccount',
+          'bankHolder',
+          'contactEmail',
+          'createdAt',
+          'updatedAt'
+        ]);
+      }
+
+      // El subdominio identifica al tenant: si cambia, cambian las URLs y el
+      // ruteo. Solo el backend puede moverlo.
+      function subdominioIntacto() {
+        return request.resource.data.subdomain == resource.data.subdomain;
+      }
+
+      allow read: if true;
+
+      allow update: if isAdminOf(tenantId)
+                    && soloCamposPublicos()
+                    && subdominioIntacto();
+
+      // Alta y baja de tenants solo por backend (Admin SDK saltea reglas).
+      allow create, delete: if false;
+
+      // Credenciales del tenant. Ningún cliente las toca, ni siquiera su
+      // dueño: las usa el backend para cobrar en nombre del tenant.
+      match /private/{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // ── products ─────────────────────────────────────────────────────────────
+    //
+    // El catálogo es público a propósito: es una tienda. El aislamiento acá
+    // es de ESCRITURA — el admin de una tienda no puede tocar el catálogo
+    // de otra.
+
+    match /products/{productId} {
+      allow read: if true;
+
+      allow create: if isAdminOf(request.resource.data.tenantId);
+
+      // tenantId inmutable: sin esto un admin podría "mudar" un producto
+      // ajeno a su propio tenant, o el propio a uno ajeno.
+      allow update: if isAdminOf(resource.data.tenantId)
+                    && request.resource.data.tenantId == resource.data.tenantId;
+
+      allow delete: if isAdminOf(resource.data.tenantId);
+    }
+
+    // ── orders ───────────────────────────────────────────────────────────────
+    //
+    // Las órdenes las crea el backend y nadie más: el precio y el stock se
+    // validan del lado del servidor contra el catálogo. Un cliente que puede
+    // crear su propia orden puede fijar el total que quiera.
+
+    match /orders/{orderId} {
+      allow create, update, delete: if false;
+
+      allow read: if isMemberOf(resource.data.tenantId);
+    }
+
+    // ── payments ─────────────────────────────────────────────────────────────
+    //
+    // Registro de idempotencia del webhook. Solo backend.
+
+    match /processed_payments/{paymentId} {
+      allow read, write: if false;
+    }
+
+    // ── default deny ─────────────────────────────────────────────────────────
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

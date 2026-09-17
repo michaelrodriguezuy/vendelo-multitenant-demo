@@ -1,0 +1,68 @@
+# Levanta el demo entero: emulador de Firestore, backend, front y la siembra
+# de datos de ejemplo. No hace falta ninguna credencial.
+#
+#   docker compose up --build
+#   → http://localhost:5173        (landing, sin tenant)
+#   → http://norte.localhost:5173  (una tienda)
+#   → http://oeste.localhost:5173  (subdominio inexistente → 404)
+
+services:
+  emulator:
+    build:
+      context: .
+      dockerfile: emulator/Dockerfile
+    ports:
+      - "8085:8085"   # Firestore
+      - "4000:4000"   # UI del emulador
+    healthcheck:
+      # /dev/tcp es una extensión de bash y esta imagen trae sh (dash).
+      # node siempre está disponible acá, así que es el chequeo más portable.
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8085,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 3s
+      timeout: 2s
+      retries: 30
+      start_period: 20s
+
+  seed:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    working_dir: /app
+    environment:
+      GCLOUD_PROJECT: demo-vendelo
+      FIRESTORE_EMULATOR_HOST: emulator:8085
+    command: ["node", "seed/seed.js"]
+    depends_on:
+      emulator:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      GCLOUD_PROJECT: demo-vendelo
+      FIRESTORE_EMULATOR_HOST: emulator:8085
+      ROOT_DOMAIN: ${ROOT_DOMAIN:-vendelo.uy}
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      BACKEND_URL: http://backend:8080
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend

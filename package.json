@@ -1,0 +1,26 @@
+{
+  "name": "vendelo-multitenant-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Resolución de tenant por subdominio, aislamiento de datos y pagos con webhook sobre Firestore.",
+  "scripts": {
+    "test": "firebase emulators:exec --project demo-vendelo --only firestore \"vitest run\"",
+    "test:only": "vitest run",
+    "seed": "node seed/seed.js",
+    "emulator": "firebase emulators:start --project demo-vendelo --only firestore",
+    "up": "docker compose up --build",
+    "down": "docker compose down -v"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.0",
+    "firebase-admin": "^13.0.0",
+    "firebase-tools": "^13.29.1",
+    "supertest": "^7.0.0",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
